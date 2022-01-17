@@ -10,7 +10,7 @@
   </parent>
   <modelVersion>4.0.0</modelVersion>
 
-  <artifactId>fdb</artifactId>
+  <artifactId>fdb-binding</artifactId>
 
   <name>FDB DB Binding</name>
 

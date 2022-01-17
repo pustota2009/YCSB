@@ -397,7 +397,7 @@ public class HBaseClient2 extends site.ycsb.DB {
    * @return Zero on success, a non-zero error code on error
    */
   @Override
-  public Status insert(String table, String key,
+  public Status update(String table, String key,
       Map<String, ByteIterator> values) {
     // if this is a "new" table, init HTable object. Else, use existing one
     if (!tableName.equals(table)) {
@@ -470,13 +470,9 @@ public class HBaseClient2 extends site.ycsb.DB {
    * @return Zero on success, a non-zero error code on error
    */
   @Override
-  public Status update(String table, String key,
+  public Status insert(String table, String key,
                        Map<String, ByteIterator> values) {
-    Status s = read(table, key, null, null);
-    if (!s.equals(Status.OK)) {
-      return s;
-    }
-    return insert(table, key, values);
+    return update(table, key, values);
   }
 
   /**

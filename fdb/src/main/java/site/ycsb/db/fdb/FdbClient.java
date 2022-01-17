@@ -18,11 +18,13 @@ package site.ycsb.db.fdb;
 import com.light.fdb.TableName;
 import com.light.fdb.client.*;
 import com.light.fdb.util.Bytes;
+import com.light.fdb.util.UniformSplit;
 import site.ycsb.ByteArrayByteIterator;
 import site.ycsb.ByteIterator;
 import site.ycsb.DBException;
 import site.ycsb.Status;
 import site.ycsb.measurements.Measurements;
+
 
 import java.io.File;
 import java.io.IOException;
@@ -68,6 +70,9 @@ public class FdbClient extends site.ycsb.DB {
   private String columnFamily = "";
   private byte[] columnFamilyBytes;
 
+  private int batchSize = 1;
+  private int tableRegionCount = 2;
+
   /**
    * Whether or not a page filter should be used to limit scan length.
    */
@@ -80,7 +85,7 @@ public class FdbClient extends site.ycsb.DB {
   @Override
   public void init() throws DBException {
     try {
-      config.addResource(new File("src/test/resources/config/fdb-site.xml"));
+      config.addResource(new File("config/fdb-site.xml"));
     } catch (Exception e) {
       System.err.println("Keytab file is not readable or not found");
       throw new DBException(e);
@@ -113,13 +118,18 @@ public class FdbClient extends site.ycsb.DB {
           // Initialize if not set up already.
           connection = ConnectionFactory.createConnection(config);
 
+          Admin adm = connection.getAdmin();
+          if (!adm.isNamespaceExists(namespace)) {
+            adm.createNamespace(namespace);
+          }
+
           // Terminate right now if table does not exist, since the client
           // will not propagate this error upstream once the workload
           // starts.
           final TableName tName = TableName.valueOf(namespace, table);
           try (Admin admin = connection.getAdmin()) {
-            if (!admin.isTableExists(tName)) {
-              throw new DBException("Table " + tName + " does not exists");
+            if (!adm.isTableExists(tName)) {
+              adm.createTable(tName, new UniformSplit().split(tableRegionCount));
             }
           }
         }
@@ -316,13 +326,24 @@ public class FdbClient extends site.ycsb.DB {
       currentTable = null;
       try {
         String namespace = getProperties().getProperty(NAMESPACE_PROPERTY, NAMESPACE_PROPERTY_DEFAULT);
+        Admin adm = connection.getAdmin();
+        if (!adm.isNamespaceExists(namespace)) {
+          adm.createNamespace(namespace);
+        }
+        TableName tName = TableName.valueOf(namespace, table);
+        if (!adm.isTableExists(tName)) {
+          adm.createTable(tName, new UniformSplit().split(tableRegionCount));
+        }
         getTable(namespace, table);
         tableName = table;
       } catch (IOException e) {
         System.err.println("Error accessing HBase table: " + e);
         return Status.ERROR;
+      } catch (Exception e) {
+        e.printStackTrace();
       }
     }
+
 
     if (debug) {
       System.out.println("Setting up put for key: " + key);

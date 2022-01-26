@@ -17,7 +17,7 @@
   <properties>
     <!-- Tests do not run on jdk9 -->
     <skipJDK9Tests>true</skipJDK9Tests>
-    <fdb.version>1.06-SNAPSHOT</fdb.version>
+    <fdb.version>1.07-SNAPSHOT</fdb.version>
   </properties>
   <dependencies>
     <dependency>

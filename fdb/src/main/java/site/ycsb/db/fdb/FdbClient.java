@@ -15,10 +15,12 @@
 
 package site.ycsb.db.fdb;
 
+import com.google.common.primitives.Longs;
 import com.light.fdb.TableName;
 import com.light.fdb.client.*;
 import com.light.fdb.util.Bytes;
 import com.light.fdb.util.UniformSplit;
+import org.apache.commons.lang3.ArrayUtils;
 import site.ycsb.ByteArrayByteIterator;
 import site.ycsb.ByteIterator;
 import site.ycsb.DBException;
@@ -30,6 +32,7 @@ import java.io.File;
 import java.io.IOException;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.zip.CRC32;
 
 import static site.ycsb.workloads.CoreWorkload.TABLENAME_PROPERTY;
 import static site.ycsb.workloads.CoreWorkload.TABLENAME_PROPERTY_DEFAULT;
@@ -71,7 +74,7 @@ public class FdbClient extends site.ycsb.DB {
   private byte[] columnFamilyBytes;
 
   private int batchSize = 1;
-  private int tableRegionCount = 2;
+  private int tableRegionCount = 1024;
 
   /**
    * Whether or not a page filter should be used to limit scan length.
@@ -222,7 +225,7 @@ public class FdbClient extends site.ycsb.DB {
         System.out.println("Doing read from HBase columnfamily " + columnFamily);
         System.out.println("Doing read for key: " + key);
       }
-      Get g = new Get(Bytes.toBytes(key));
+      Get g = new Get(makeHbaseRowKey(key));
       r = currentTable.get(g);
     } catch (IOException e) {
       if (debug) {
@@ -283,7 +286,7 @@ public class FdbClient extends site.ycsb.DB {
       }
     }
 
-    Get g = new Get(Bytes.toBytes(startkey));
+    Get g = new Get(makeHbaseRowKey(startkey));
 
     // get results
     try {
@@ -348,7 +351,7 @@ public class FdbClient extends site.ycsb.DB {
     if (debug) {
       System.out.println("Setting up put for key: " + key);
     }
-    Put p = new Put(Bytes.toBytes(key));
+    Put p = new Put(makeHbaseRowKey(key));
     for (Map.Entry<String, ByteIterator> entry : values.entrySet()) {
       byte[] value = entry.getValue().toArray();
       if (debug) {
@@ -438,6 +441,15 @@ public class FdbClient extends site.ycsb.DB {
     return Boolean.parseBoolean(getProperties().getProperty(param, Boolean.toString(defaultValue)));
   }
 
+
+  public static byte[] makeHbaseRowKey(String key) {
+    byte[] nonSaltedRowKey = Bytes.toBytes(key);
+    CRC32 crc32 = new CRC32();
+    crc32.update(nonSaltedRowKey);
+    long crc32Value = crc32.getValue();
+    byte[] salt = Arrays.copyOfRange(Longs.toByteArray(crc32Value), 5, 7);
+    return ArrayUtils.addAll(salt, nonSaltedRowKey);
+  }
 }
 
 /*

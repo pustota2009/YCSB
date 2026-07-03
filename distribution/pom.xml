@@ -59,6 +59,11 @@ LICENSE file.
       <artifactId>hbase2-binding</artifactId>
       <version>${project.version}</version>
     </dependency>
+    <dependency>
+      <groupId>site.ycsb</groupId>
+      <artifactId>fdb-binding</artifactId>
+      <version>${project.version}</version>
+    </dependency>
   </dependencies>
   <build>
     <plugins>

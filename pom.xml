@@ -111,7 +111,7 @@ LICENSE file.
     <maven.dependency.version>2.10</maven.dependency.version>
 
     <!-- datastore binding versions, lex sorted -->
-    <aerospike.version>3.1.2</aerospike.version>
+    <aerospike.version>6.0.0</aerospike.version>
     <cassandra.cql.version>3.0.0</cassandra.cql.version>
     <hbase1.version>1.4.12</hbase1.version>
     <hbase2.version>2.2.3</hbase2.version>

@@ -117,6 +117,13 @@ public final class Client {
    */
   public static final String THREAD_COUNT_PROPERTY = "threadcount";
 
+  /** Defines whether a finite operation count is split per thread or allocated globally. */
+  public static final String WORK_ALLOCATION_PROPERTY = "workallocation";
+  public static final String WORK_ALLOCATION_GLOBAL = "global";
+  public static final String WORK_ALLOCATION_THREAD = "thread";
+  public static final String WORK_ALLOCATION_BLOCK_SIZE_PROPERTY = "workallocationblocksize";
+  public static final int WORK_ALLOCATION_BLOCK_SIZE_DEFAULT = 256;
+
   /**
    * Indicates how many inserts to do if less than recordcount.
    * Useful for partitioning the load among multiple servers if the client is the bottleneck.
@@ -422,6 +429,14 @@ public final class Client {
         threadcount = opcount;
         System.out.println("Warning: the threadcount is bigger than recordcount, the threadcount will be recordcount!");
       }
+      String allocationMode = props.getProperty(WORK_ALLOCATION_PROPERTY, WORK_ALLOCATION_GLOBAL);
+      if (!WORK_ALLOCATION_GLOBAL.equals(allocationMode) && !WORK_ALLOCATION_THREAD.equals(allocationMode)) {
+        throw new IllegalArgumentException("Unknown work allocation mode: " + allocationMode);
+      }
+      int allocationBlockSize = Integer.parseInt(props.getProperty(WORK_ALLOCATION_BLOCK_SIZE_PROPERTY,
+          String.valueOf(WORK_ALLOCATION_BLOCK_SIZE_DEFAULT)));
+      OperationAllocator allocator = WORK_ALLOCATION_GLOBAL.equals(allocationMode) && opcount > 0
+          ? new OperationAllocator(opcount, allocationBlockSize) : null;
       for (int threadid = 0; threadid < threadcount; threadid++) {
         DB db;
         try {
@@ -443,6 +458,7 @@ public final class Client {
             completeLatch);
         t.setThreadId(threadid);
         t.setThreadCount((int)threadcount);
+        t.setOperationAllocator(allocator, threadid == 0);
         clients.add(t);
       }
 

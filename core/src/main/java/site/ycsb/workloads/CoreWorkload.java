@@ -134,6 +134,8 @@ public class CoreWorkload extends Workload {
 
   public static final String CONNECTION_NIO = "connection_nio";
   public static final String CONNECTION_NIO_DEFAULT = "false";
+  public static final String TABLE_RECREATE = "tablerecreate";
+  public static final String TABLE_RECREATE_DEFAULT = "false";
 
 
   /**

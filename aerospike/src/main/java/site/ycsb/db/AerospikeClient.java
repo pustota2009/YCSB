@@ -19,9 +19,14 @@ package site.ycsb.db;
 
 import com.aerospike.client.AerospikeException;
 import com.aerospike.client.Bin;
+import com.aerospike.client.BatchRecord;
+import com.aerospike.client.BatchWrite;
 import com.aerospike.client.Key;
+import com.aerospike.client.Operation;
 import com.aerospike.client.Record;
 import com.aerospike.client.policy.ClientPolicy;
+import com.aerospike.client.policy.BatchPolicy;
+import com.aerospike.client.policy.BatchWritePolicy;
 import com.aerospike.client.policy.Policy;
 import com.aerospike.client.policy.RecordExistsAction;
 import com.aerospike.client.policy.WritePolicy;
@@ -30,6 +35,8 @@ import site.ycsb.DBException;
 import site.ycsb.Status;
 
 import java.util.HashMap;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
@@ -43,8 +50,10 @@ public class AerospikeClient extends site.ycsb.DB {
   private static final String DEFAULT_PORT = "3000";
   private static final String DEFAULT_TIMEOUT = "10000";
   private static final String DEFAULT_NAMESPACE = "ycsb";
+  private static final String DEFAULT_SET = "usertable";
 
   private String namespace = null;
+  private String setName = null;
 
   private com.aerospike.client.AerospikeClient client = null;
 
@@ -52,6 +61,10 @@ public class AerospikeClient extends site.ycsb.DB {
   private WritePolicy insertPolicy = new WritePolicy();
   private WritePolicy updatePolicy = new WritePolicy();
   private WritePolicy deletePolicy = new WritePolicy();
+  private BatchPolicy batchPolicy = new BatchPolicy();
+  private BatchWritePolicy insertBatchPolicy = new BatchWritePolicy();
+  private BatchWritePolicy updateBatchPolicy = new BatchWritePolicy();
+  private BatchWritePolicy deleteBatchPolicy = new BatchWritePolicy();
 
   private int batchSize= 1;
 
@@ -59,10 +72,20 @@ public class AerospikeClient extends site.ycsb.DB {
   public void init() throws DBException {
     insertPolicy.recordExistsAction = RecordExistsAction.CREATE_ONLY;
     updatePolicy.recordExistsAction = RecordExistsAction.REPLACE_ONLY;
+    insertBatchPolicy.recordExistsAction = RecordExistsAction.CREATE_ONLY;
+    updateBatchPolicy.recordExistsAction = RecordExistsAction.REPLACE_ONLY;
 
     Properties props = getProperties();
 
     namespace = props.getProperty("as.namespace", DEFAULT_NAMESPACE);
+    setName = props.getProperty("as.set", DEFAULT_SET);
+
+    if (namespace.trim().isEmpty()) {
+      throw new DBException("Aerospike namespace must not be empty.");
+    }
+    if (setName.trim().isEmpty()) {
+      throw new DBException("Aerospike set must not be empty.");
+    }
 
     String host = props.getProperty("as.host", DEFAULT_HOST);
     String user = props.getProperty("as.user");
@@ -71,10 +94,11 @@ public class AerospikeClient extends site.ycsb.DB {
     int timeout = Integer.parseInt(props.getProperty("as.timeout",
         DEFAULT_TIMEOUT));
 
-    readPolicy.timeout = timeout;
-    insertPolicy.timeout = timeout;
-    updatePolicy.timeout = timeout;
-    deletePolicy.timeout = timeout;
+    readPolicy.setTimeout(timeout);
+    insertPolicy.setTimeout(timeout);
+    updatePolicy.setTimeout(timeout);
+    deletePolicy.setTimeout(timeout);
+    batchPolicy.setTimeout(timeout);
 
     ClientPolicy clientPolicy = new ClientPolicy();
 
@@ -96,11 +120,19 @@ public class AerospikeClient extends site.ycsb.DB {
           Integer.parseInt(getProperties().getProperty("batchsize"));
     }
 
+    if (batchSize <= 0) {
+      throw new DBException("batchsize must be greater than zero.");
+    }
+
   }
 
   @Override
   public void cleanup() throws DBException {
     client.close();
+  }
+
+  private Key createKey(String key) {
+    return new Key(namespace, setName, key);
   }
 
   @Override
@@ -111,13 +143,13 @@ public class AerospikeClient extends site.ycsb.DB {
 
       if (fields != null) {
         for (int i = 0; i < batchSize; i++) {
-          Key k = new Key(namespace, table, key + "_" + i);
+          Key k = createKey(key + "_" + i);
           record = client.get(readPolicy, k,
               fields.toArray(new String[fields.size()]));
         }
       } else {
         for (int i = 0; i < batchSize; i++) {
-          Key k = new Key(namespace, table, key + "_" + i);
+          Key k = createKey(key + "_" + i);
           record = client.get(readPolicy, k);
         }
       }
@@ -151,9 +183,36 @@ public class AerospikeClient extends site.ycsb.DB {
       ++index;
     }
 
+    if (batchSize > 1) {
+      List<BatchRecord> records = new ArrayList<BatchRecord>(batchSize);
+      BatchWritePolicy batchWritePolicy = writePolicy == insertPolicy
+          ? insertBatchPolicy : updateBatchPolicy;
+
+      Operation[] operations = new Operation[bins.length];
+      for (int i = 0; i < bins.length; i++) {
+        operations[i] = Operation.put(bins[i]);
+      }
+
+      for (int i = 0; i < batchSize; i++) {
+        records.add(new BatchWrite(batchWritePolicy, createKey(key + "_" + i),
+            operations));
+      }
+
+      try {
+        if (!client.operate(batchPolicy, records)) {
+          System.err.println("Error while batch writing key " + key);
+          return Status.ERROR;
+        }
+      } catch (AerospikeException e) {
+        System.err.println("Error while batch writing key " + key + ": " + e);
+        return Status.ERROR;
+      }
+      return Status.OK;
+    }
+
     Key keyObj;
     for (int i = 0; i < batchSize; i++) {
-      keyObj = new Key(namespace, table, key + "_" + i);
+      keyObj = createKey(key + "_" + i);
       try {
         client.put(writePolicy, keyObj, bins);
       } catch (AerospikeException e) {
@@ -180,9 +239,25 @@ public class AerospikeClient extends site.ycsb.DB {
   @Override
   public Status delete(String table, String key) {
     try {
-      if (!client.delete(deletePolicy, new Key(namespace, table, key))) {
-        System.err.println("Record key " + key + " not found (delete)");
-        return Status.ERROR;
+      if (batchSize > 1) {
+        List<BatchRecord> records = new ArrayList<BatchRecord>(batchSize);
+        for (int i = 0; i < batchSize; i++) {
+          records.add(new BatchWrite(deleteBatchPolicy, createKey(key + "_" + i),
+              new Operation[] {Operation.delete()}));
+        }
+
+        if (!client.operate(batchPolicy, records)) {
+          System.err.println("Error while batch deleting key " + key);
+          return Status.ERROR;
+        }
+        return Status.OK;
+      }
+
+      for (int i = 0; i < batchSize; i++) {
+        if (!client.delete(deletePolicy, createKey(key + "_" + i))) {
+          System.err.println("Record key " + key + " not found (delete)");
+          return Status.ERROR;
+        }
       }
 
       return Status.OK;

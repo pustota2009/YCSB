@@ -41,6 +41,16 @@ The following connection parameters are available.
   * `as.password` - The password for the user (no default)
   * `as.timeout` - The transaction and connection timeout (in ms, default: `10000`)
   * `as.namespace` - The namespace to be used for the benchmark (default: `ycsb`)
+  * `as.set` - The set to be used for the benchmark (default: `usertable`)
+
+When `batchsize` is greater than `1`, insert, update, and delete operations use
+Aerospike batch writes and send all generated keys in one batch request. Batch
+writes are not atomic across keys and require Aerospike Java client 6.0.0 and
+Aerospike Server 6.0.0 or newer.
+
+The YCSB `table` property does not select the Aerospike set. All records are
+stored in the set configured by `as.set` within the namespace configured by
+`as.namespace`.
 
 Add them to the workload or set them with the shell command, as in:
 
@@ -55,4 +65,3 @@ Load the data:
 Run the workload test:
 
     ./bin/ycsb run aerospike -s -P workloads/workloada >outputRun.txt
-

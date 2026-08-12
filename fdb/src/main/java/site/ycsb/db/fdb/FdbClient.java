@@ -77,7 +77,15 @@ public class FdbClient extends site.ycsb.DB {
 
 
   private Table currentTable = null;
+  private BufferedMutator bufferedMutator = null;
 
+  /**
+   * When enabled, updates are accumulated by a BufferedMutator and flushed from cleanup().
+   * When disabled, update() obtains and closes a Table for every YCSB operation so the
+   * lightweight-table-handle usage pattern can be measured explicitly.
+   */
+  private boolean clientSideBuffering = false;
+  private boolean tableRecreate = false;
   private String columnFamily = "";
   private byte[] columnFamilyBytes;
 
@@ -104,6 +112,10 @@ public class FdbClient extends site.ycsb.DB {
     tableRegionCount = Integer.parseInt(getProperties().getProperty(TABLE_REGION_COUNT, TABLE_REGION_COUNT_DEFAULT));
     batchSize = Integer.parseInt(getProperties().getProperty(BATCH_SIZE, BATCH_SIZE_DEFAULT));
     connectionNIO = Boolean.parseBoolean(getProperties().getProperty(CONNECTION_NIO, CONNECTION_NIO_DEFAULT));
+    clientSideBuffering = Boolean.parseBoolean(
+        getProperties().getProperty("clientbuffering", "false"));
+    tableRecreate = Boolean.parseBoolean(
+        getProperties().getProperty(TABLE_RECREATE, TABLE_RECREATE_DEFAULT));
 
     try {
       THREAD_COUNT.getAndIncrement();
@@ -170,11 +182,15 @@ public class FdbClient extends site.ycsb.DB {
     Measurements measurements = Measurements.getMeasurements();
     try {
       long st = System.nanoTime();
+      if (bufferedMutator != null) {
+        bufferedMutator.close();
+        bufferedMutator = null;
+      }
 /*      if (currentTable != null) {
         currentTable.close();
       }*/
       long en = System.nanoTime();
-      final String type = "CLEANUP";
+      final String type = clientSideBuffering ? "UPDATE" : "CLEANUP";
       measurements.measure(type, (int) ((en - st) / 1000));
       int threadCount = THREAD_COUNT.decrementAndGet();
       if (threadCount <= 0) {
@@ -269,6 +285,90 @@ public class FdbClient extends site.ycsb.DB {
   }
 
   /**
+   * Experimental variant of {@link #update(String, String, Map)} that deliberately does not
+   * close the per-operation Table. It is not used by the YCSB binding unless invoked explicitly.
+   */
+  public Status updateNoClose(String table, String key, Map<String, ByteIterator> values) {
+    String namespace = getProperties().getProperty(NAMESPACE_PROPERTY, NAMESPACE_PROPERTY_DEFAULT);
+    final TableName targetTable = TableName.valueOf(namespace, table);
+
+    if (!tableName.equals(table)) {
+      try {
+        Admin adm = (Admin) connection.getAdmin();
+        if (!adm.isNamespaceExists(namespace)) {
+          adm.createNamespace(namespace);
+        }
+        if (!adm.tableExists(targetTable)) {
+          adm.createTable(targetTable, new UniformSplit().split(tableRegionCount));
+        }
+
+        if (bufferedMutator != null) {
+          bufferedMutator.close();
+          bufferedMutator = null;
+        }
+        if (clientSideBuffering) {
+          bufferedMutator = connection.getBufferedMutator(targetTable);
+        }
+        tableName = table;
+      } catch (IOException e) {
+        System.err.println("Error accessing HBase table: " + e);
+        return Status.ERROR;
+      } catch (Exception e) {
+        e.printStackTrace();
+        return Status.ERROR;
+      }
+    }
+
+    if (debug) {
+      System.out.println("Setting up put for key: " + key);
+    }
+
+    HashMap<byte[], byte[]> hmQV = new HashMap<>();
+    for (Map.Entry<String, ByteIterator> entry : values.entrySet()) {
+      byte[] value = entry.getValue().toArray();
+      hmQV.put(Bytes.toBytes(entry.getKey()), value);
+    }
+
+    List<Put> puts = new ArrayList<>();
+    for (int i = 0; i < batchSize; i++) {
+      Put p = new Put(makeHbaseRowKey(key + "_" + i));
+      for (byte[] qfl : hmQV.keySet()) {
+        p.addColumn(columnFamilyBytes, qfl, hmQV.get(qfl));
+      }
+      puts.add(p);
+    }
+
+    try {
+      if (clientSideBuffering) {
+        if (bufferedMutator == null) {
+          bufferedMutator = connection.getBufferedMutator(targetTable);
+        }
+        if (puts.size() == 1) {
+          bufferedMutator.mutate(puts.get(0));
+        } else {
+          bufferedMutator.mutate(new ArrayList<DbMutation>(puts));
+        }
+      } else {
+        Table operationTable = (Table) connection.getTable(targetTable);
+        if (puts.size() == 1) {
+          operationTable.put(puts.get(0));
+        } else {
+          operationTable.put(puts);
+        }
+      }
+    } catch (IOException e) {
+      if (debug) {
+        System.err.println("Error doing put: " + e);
+      }
+      return Status.ERROR;
+    } catch (ConcurrentModificationException e) {
+      return Status.ERROR;
+    }
+
+    return Status.OK;
+  }
+
+  /**
    * Perform a range scan for a set of records in the database. Each field/value
    * pair from the result will be stored in a HashMap.
    *
@@ -336,21 +436,26 @@ public class FdbClient extends site.ycsb.DB {
   @Override
   public Status update(String table, String key, Map<String, ByteIterator> values) {
     String namespace = getProperties().getProperty(NAMESPACE_PROPERTY, NAMESPACE_PROPERTY_DEFAULT);
-    // if this is a "new" table, init HTable object. Else, use existing one
-    if (!tableName.equals(table) || currentTable == null) {
+    final TableName targetTable = TableName.valueOf(namespace, table);
+
+    // Create the table when necessary. In the non-buffered branch the operation Table itself
+    // is deliberately obtained below for every update and is not retained in currentTable.
+    if (!tableName.equals(table)) {
       try {
         Admin adm = (Admin) connection.getAdmin();
         if (!adm.isNamespaceExists(namespace)) {
           adm.createNamespace(namespace);
         }
-        TableName tName = TableName.valueOf(namespace, table);
-        if (!adm.tableExists(tName)) {
-          adm.createTable(tName, new UniformSplit().split(tableRegionCount));
+        if (!adm.tableExists(targetTable)) {
+          adm.createTable(targetTable, new UniformSplit().split(tableRegionCount));
         }
-        try {
-          getTable(namespace, table);
-        } catch (IOException e) {
-          e.printStackTrace();
+
+        if (bufferedMutator != null) {
+          bufferedMutator.close();
+          bufferedMutator = null;
+        }
+        if (clientSideBuffering) {
+          bufferedMutator = connection.getBufferedMutator(targetTable);
         }
         tableName = table;
       } catch (IOException e) {
@@ -358,6 +463,7 @@ public class FdbClient extends site.ycsb.DB {
         return Status.ERROR;
       } catch (Exception e) {
         e.printStackTrace();
+        return Status.ERROR;
       }
     }
 
@@ -380,7 +486,24 @@ public class FdbClient extends site.ycsb.DB {
       puts.add(p);
     }
     try {
-      currentTable.put(puts);
+      if (clientSideBuffering) {
+        if (bufferedMutator == null) {
+          bufferedMutator = connection.getBufferedMutator(targetTable);
+        }
+        if (puts.size() == 1) {
+          bufferedMutator.mutate(puts.get(0));
+        } else {
+          bufferedMutator.mutate(new ArrayList<DbMutation>(puts));
+        }
+      } else {
+        try (Table operationTable = (Table) connection.getTable(targetTable)) {
+          if (puts.size() == 1) {
+            operationTable.put(puts.get(0));
+          } else {
+            operationTable.put(puts);
+          }
+        }
+      }
     } catch (IOException e) {
       if (debug) {
         System.err.println("Error doing put: " + e);
@@ -409,7 +532,11 @@ public class FdbClient extends site.ycsb.DB {
   @Override
   public Status insert(String table, String key,
                        Map<String, ByteIterator> values) {
-    return update(table, key, values);
+    if (tableRecreate) {
+      return update(table, key, values);
+    } else {
+      return updateNoClose(table, key, values);
+    }
   }
 
   /**
